@@ -1,0 +1,9 @@
+services:
+  scanner:
+    build: .
+    environment:
+      RELEASES_PATH: /data/releases
+      OUTPUT_PATH: /data/output/inventory.json
+    volumes:
+      - ${RELEASES_PATH:-./sample-data}:/data/releases:ro
+      - ./output:/data/output

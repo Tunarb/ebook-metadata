@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+
 from ..models import Evidence
 
 KEYS = {
@@ -15,6 +16,9 @@ KEYS = {
 
 
 def collect(candidate) -> list[Evidence]:
+    if not candidate.context_is_release_folder:
+        return []
+
     results: list[Evidence] = []
     for path in Path(candidate.context_dir).glob("*.nfo"):
         try:

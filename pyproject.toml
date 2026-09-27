@@ -11,6 +11,11 @@ dependencies = [
   "Pillow>=10,<13",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+]
+
 [project.scripts]
 ebook-scan = "ebook_metadata.scanner:main"
 

@@ -36,10 +36,12 @@ class BookCandidate:
     context_is_release_folder: bool
     folder_name: str
     files: list[str] = field(default_factory=list)
+    context_type: str = "standalone"
     evidence: list[Evidence] = field(default_factory=list)
     external_images: list[ImageInfo] = field(default_factory=list)
     embedded_cover: dict[str, Any] | None = None
     errors: list[str] = field(default_factory=list)
+    enrichment_errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

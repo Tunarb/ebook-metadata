@@ -4,6 +4,13 @@ services:
     environment:
       RELEASES_PATH: /data/releases
       OUTPUT_PATH: /data/output/inventory.json
+      CALIBRE_CONTAINER: calibre
     volumes:
       - ${RELEASES_PATH:-./sample-data}:/data/releases:ro
-      - ./output:/data/output
+      - "./output:/data/output"
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  test:
+    build: .
+    entrypoint: ["pytest"]
+    command: ["-q"]

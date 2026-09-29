@@ -109,6 +109,23 @@ def test_lookup_builds_expected_docker_command(monkeypatch):
     assert kwargs["text"] is True
 
 
+def test_lookup_uses_fast_default_timeout_and_bounded_plugins(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return completed(POLLi_OPF)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    CalibreClient(container="calibre-test").lookup(title="Test")
+
+    args = calls[0]
+    assert args[args.index("--timeout") + 1] == "15"
+    plugins = [args[i + 1] for i, value in enumerate(args) if value == "--allowed-plugin"]
+    assert plugins == ["Google", "Open Library"]
+
+
 def test_lookup_joins_multiple_authors_and_allowed_plugins(monkeypatch):
     calls = []
 
@@ -127,6 +144,22 @@ def test_lookup_joins_multiple_authors_and_allowed_plugins(monkeypatch):
     assert args.count("--allowed-plugin") == 2
     assert "Google" in args
     assert "Open Library" in args
+
+
+def test_lookup_caches_identical_successful_queries(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return completed(POLLi_OPF)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client = CalibreClient()
+    first = client.lookup(title="Test")
+    second = client.lookup(title="Test")
+
+    assert first.title == second.title
+    assert len(calls) == 1
 
 
 def test_lookup_requires_input():

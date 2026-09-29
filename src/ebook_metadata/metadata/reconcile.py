@@ -178,11 +178,59 @@ def _choose_title(evidence: list[Evidence]) -> tuple[str | None, list[str]]:
     isbn_values = {_normalize_isbn(str(e.value)) for e in _values(evidence, "isbn") if _normalize_isbn(str(e.value))}
 
     def pair_equivalent(first: str, second: str) -> bool:
-        if _title_equivalent(first, second, subtitles=subtitles, series_indices=series_indices): return True
+        if _title_equivalent(first, second, subtitles=subtitles, series_indices=series_indices):
+            return True
+
         first_item, second_item = title_items[first], title_items[second]
-        sources = {first_item.source.casefold(), second_item.source.casefold()}
+        first_source = first_item.source.casefold()
+        second_source = second_item.source.casefold()
+        sources = {first_source, second_source}
+
         if sources & {"folder", "filename"} and sources & {"epub", "nfo", "calibre"}:
-            if _title_comparison_key(first) == _title_comparison_key(second): return True
+            if _title_comparison_key(first) == _title_comparison_key(second):
+                return True
+
+        # Same ISBN + same author is useful identity evidence, but never enough
+        # on its own. Use it only for narrow catalogue-title transformations:
+        #   - an explicit series/book prefix followed by the catalogue subtitle;
+        #   - a harmless generic descriptor such as ": roman".
+        if len(isbn_values) == 1 and sources <= {"epub", "nfo", "calibre"}:
+            author_values = _unique([str(e.value) for e in _values(evidence, "author")])
+            same_author_evidence = len(author_values) == 1
+            if same_author_evidence:
+                normalized_first = _normalize_title(first)
+                normalized_second = _normalize_title(second)
+                shorter, longer = sorted((normalized_first, normalized_second), key=len)
+
+                if first_source in {"epub", "nfo"} and second_source == "calibre" or second_source in {"epub", "nfo"} and first_source == "calibre":
+                    # Catalogue title can omit an explicit series prefix/index.
+                    stripped_longer = _strip_embedded_numeric_index(longer)
+                    stripped_shorter = _strip_embedded_numeric_index(shorter)
+
+                    if stripped_longer and stripped_shorter:
+                        # Require at least two words in the retained base so
+                        # short titles such as "Bog 1" vs "Bog" remain REVIEW.
+                        base_tokens = re.findall(r"[\wÆØÅæøå]+", stripped_shorter, flags=re.UNICODE)
+                        if len(base_tokens) >= 2:
+                            if (
+                                _title_punctuation_key(stripped_longer) == _title_punctuation_key(stripped_shorter)
+                                or _title_punctuation_key(stripped_longer).endswith(_title_punctuation_key(stripped_shorter))
+                                or _title_punctuation_key(stripped_shorter).endswith(_title_punctuation_key(stripped_longer))
+                            ):
+                                return True
+
+                    # Calibre may add a generic catalogue descriptor.
+                    generic_descriptors = {"roman", "novel"}
+                    for candidate in (normalized_first, normalized_second):
+                        for descriptor in generic_descriptors:
+                            pattern = re.compile(rf"(?:^|[:|])\s*{re.escape(descriptor)}$")
+                            if pattern.search(candidate):
+                                base = re.sub(rf"(?:[:|])\s*{re.escape(descriptor)}$", "", candidate).strip()
+                                other = normalized_second if candidate == normalized_first else normalized_first
+                                if _title_punctuation_key(base) == _title_punctuation_key(other):
+                                    return True
+
+        # Existing same-ISBN EPUB/Calibre folded-subtitle rule.
         if len(isbn_values) == 1 and sources == {"epub", "calibre"}:
             epub_title = first if first_item.source.casefold() == "epub" else second
             calibre_title = first if first_item.source.casefold() == "calibre" else second
@@ -192,7 +240,8 @@ def _choose_title(evidence: list[Evidence]) -> tuple[str | None, list[str]]:
                 remainder = longer[len(shorter):]
                 if remainder.startswith((" - ", ": ", " | ")):
                     suffix = remainder[3:].strip()
-                    if suffix and re.search(r"[A-Za-zÆØÅæøåÀ-ÖØ-öø-ÿ]", suffix): return True
+                    if suffix and re.search(r"[A-Za-zÆØÅæøåÀ-ÖØ-öø-ÿ]", suffix):
+                        return True
         return False
 
     equivalent = all(pair_equivalent(first, second) for index, first in enumerate(all_values) for second in all_values[index + 1:])
@@ -212,6 +261,12 @@ def _choose_title(evidence: list[Evidence]) -> tuple[str | None, list[str]]:
             if title_items[value].source.casefold() in STRONG_METADATA_SOURCES:
                 weak_match = any(other != value and title_items[other].source.casefold() in WEAK_DERIVED_SOURCES and _title_comparison_key(other) == _title_comparison_key(value) for other in all_values)
                 if weak_match: return value, []
+        # Prefer release-local metadata spelling when titles are equivalent.
+        # Calibre can legitimately normalize punctuation/spacing, but EPUB/NFO
+        # should remain the canonical title when available.
+        for value in all_values:
+            if title_items[value].source.casefold() in {"epub", "nfo"}:
+                return value, []
         return min(all_values, key=lambda value: (len(_normalize_title(value)), _normalize_title(value))), []
 
     max_conf = max((e.confidence or 0.0) for e in items)

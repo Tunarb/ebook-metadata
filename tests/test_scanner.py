@@ -13,6 +13,10 @@ def test_scan_uses_configured_calibre_worker_count(monkeypatch, tmp_path: Path):
     ]
 
     monkeypatch.setattr("ebook_metadata.scanner.discover", lambda source: candidates)
+    monkeypatch.setattr("ebook_metadata.scanner.folder.collect", lambda candidate: [])
+    monkeypatch.setattr("ebook_metadata.scanner.nfo.collect", lambda candidate: [])
+    monkeypatch.setattr("ebook_metadata.scanner.epub.collect", lambda candidate: ([], None))
+    monkeypatch.setattr("ebook_metadata.scanner.images.collect", lambda candidate: [])
 
     class FakeClient:
         def __init__(self, **kwargs):

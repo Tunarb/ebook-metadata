@@ -18,6 +18,7 @@ TITLE_SEPARATOR_RE = re.compile(r"\s*(?:[-–—:|]\s*)+")
 BOOK_INDEX_RE = re.compile(r"\b(?:bog|book|bind|volume|vol\.?)\s*\d+(?:\.\d+)?\b", re.IGNORECASE)
 EXPLICIT_INDEX_RE = re.compile(r"(?:#\s*\d+(?:\.\d+)?|\b(?:bog|book|bind|volume|vol\.?)\s*\d+(?:\.\d+)?\b)", re.IGNORECASE)
 
+
 @dataclass
 class ResolvedMetadata:
     title: str | None = None
@@ -44,18 +45,22 @@ def _values(evidence: list[Evidence], field: str) -> list[Evidence]:
 
 
 def _unique(values: list[str]) -> list[str]:
-    seen: set[str] = set(); result: list[str] = []
+    seen: set[str] = set()
+    result: list[str] = []
     for value in values:
         key = value.casefold().strip()
         if key and key not in seen:
-            seen.add(key); result.append(value.strip())
+            seen.add(key)
+            result.append(value.strip())
     return result
 
 
 def _normalize_isbn(value: str) -> str | None:
     raw = ISBN_RE.sub("", value or "").upper()
-    if len(raw) not in (10, 13): return None
-    if not (raw[:-1].isdigit() and (raw[-1].isdigit() or raw[-1] == "X")): return None
+    if len(raw) not in (10, 13):
+        return None
+    if not (raw[:-1].isdigit() and (raw[-1].isdigit() or raw[-1] == "X")):
+        return None
     return raw
 
 
@@ -74,7 +79,8 @@ def _normalize_title(value: str) -> str:
 
 def _title_comparison_key(value: str) -> str:
     value = _normalize_title(value)
-    if not value: return ""
+    if not value:
+        return ""
     value = value.replace("æ", "ae").replace("ø", "o").replace("å", "a")
     value = value.replace("Æ", "ae").replace("Ø", "o").replace("Å", "a")
     value = unicodedata.normalize("NFKD", value)
@@ -82,20 +88,8 @@ def _title_comparison_key(value: str) -> str:
 
 
 def _title_punctuation_key(value: str) -> str:
-    """Compare title wording while ignoring punctuation/spacing only.
-
-    Deliberately preserves letters/diacritics so this is not an accent-insensitive
-    identity check; ASCII release-name matching remains the narrower path below.
-    """
     value = _normalize_title(value)
     return re.sub(r"[^\w]+", "", value, flags=re.UNICODE)
-
-
-def _title_parts(value: str) -> list[str]:
-    normalized = _normalize_title(value)
-    if not normalized: return []
-    parts = TITLE_SEPARATOR_RE.split(normalized)
-    return [part.strip(" .,:;-|") for part in parts if part.strip(" .,:;-|")]
 
 
 def _strip_book_index(value: str) -> str:
@@ -104,12 +98,7 @@ def _strip_book_index(value: str) -> str:
 
 
 def _strip_embedded_numeric_index(value: str) -> str:
-    """Remove explicit/short standalone book indices, but preserve title numbers.
-
-    Release/catalogue titles commonly differ as ``Title 4 - Subtitle`` vs
-    ``Title - Subtitle``. Four-digit values such as ``1984`` are never treated
-    as a book index.
-    """
+    """Remove explicit/short standalone book indices, but preserve title numbers."""
     value = EXPLICIT_INDEX_RE.sub(" ", value)
     value = re.sub(r"(?<=\s)\d{1,3}(?:\.\d+)?(?=\s|[-:|])", " ", value)
     value = re.sub(r"(?<=^)\d{1,3}(?:\.\d+)?(?=\s|[-:|])", " ", value)
@@ -117,19 +106,18 @@ def _strip_embedded_numeric_index(value: str) -> str:
 
 
 def _extract_explicit_book_index(value: str) -> tuple[str, str] | None:
-    """Return (base_title, index) for an explicit book/volume index.
-
-    Handles release/catalogue forms such as ``Title #4: Subtitle``,
-    ``Title - bind 3: Subtitle`` and ``Title 3``. Four-digit title numbers
-    are intentionally excluded from the trailing-number form.
-    """
+    """Return (base_title, index) for explicit or short trailing book indices."""
     normalized = _normalize_title(value)
     if not normalized:
         return None
 
     marker = re.search(r"#\s*(\d{1,3}(?:\.\d+)?)", normalized)
     if not marker:
-        marker = re.search(r"\b(?:bog|book|bind|volume|vol\.?)\s*(\d{1,3}(?:\.\d+)?)\b", normalized, re.IGNORECASE)
+        marker = re.search(
+            r"\b(?:bog|book|bind|volume|vol\.?)\s*(\d{1,3}(?:\.\d+)?)\b",
+            normalized,
+            re.IGNORECASE,
+        )
     if marker:
         base = normalized[:marker.start()].strip(" .,:;-|")
         return (base, marker.group(1)) if base else None
@@ -141,23 +129,31 @@ def _extract_explicit_book_index(value: str) -> tuple[str, str] | None:
     return None
 
 
-def _title_equivalent(first: str, second: str, *, subtitles: list[str] | None = None, series_indices: list[str] | None = None) -> bool:
+def _title_equivalent(
+    first: str,
+    second: str,
+    *,
+    subtitles: list[str] | None = None,
+    series_indices: list[str] | None = None,
+) -> bool:
     left, right = _normalize_title(first), _normalize_title(second)
-    if not left or not right: return False
-    if left == right or _title_punctuation_key(left) == _title_punctuation_key(right): return True
+    if not left or not right:
+        return False
+    if left == right or _title_punctuation_key(left) == _title_punctuation_key(right):
+        return True
 
     subtitles = [_normalize_title(v) for v in (subtitles or []) if v and _normalize_title(v)]
     indices = [_normalize_title(v) for v in (series_indices or []) if v and _normalize_title(v)]
 
-    # A title may contain an explicit book/volume marker while the catalogue
-    # title omits it. Only remove explicit markers such as "#4" or "Bog 4".
     if _title_punctuation_key(_strip_embedded_numeric_index(left)) == _title_punctuation_key(_strip_embedded_numeric_index(right)):
         return True
 
     shorter, longer = sorted((left, right), key=len)
-    if not longer.startswith(shorter): return False
+    if not longer.startswith(shorter):
+        return False
     remainder = _normalize_title(longer[len(shorter):].strip(" .,:;-|"))
-    if not remainder: return True
+    if not remainder:
+        return True
 
     acceptable_suffixes: list[str] = []
     for subtitle in subtitles:
@@ -167,19 +163,22 @@ def _title_equivalent(first: str, second: str, *, subtitles: list[str] | None = 
     for index in indices:
         acceptable_suffixes.extend([index, f"bog {index}", f"book {index}", f"bind {index}"])
     for suffix in acceptable_suffixes:
-        if remainder == _normalize_title(suffix): return True
+        if remainder == _normalize_title(suffix):
+            return True
     stripped_remainder = _strip_book_index(remainder)
     return any(stripped_remainder == subtitle for subtitle in subtitles)
 
 
 def _choose(evidence: list[Evidence], field: str) -> tuple[str | None, list[str]]:
     items = _values(evidence, field)
-    if not items: return None, []
+    if not items:
+        return None, []
     all_values = _unique([str(e.value) for e in items])
     max_conf = max((e.confidence or 0.0) for e in items)
     top_values = _unique([str(e.value) for e in items if (e.confidence or 0.0) == max_conf])
     chosen = top_values[0] if top_values else all_values[0]
     return (chosen, [f"conflicting {field} evidence: {all_values}"]) if len(all_values) > 1 else (chosen, [])
+
 
 STRONG_METADATA_SOURCES = {"epub", "nfo", "calibre"}
 WEAK_DERIVED_SOURCES = {"folder", "filename"}
@@ -191,16 +190,58 @@ def _metadata_items(evidence: list[Evidence], field: str) -> list[Evidence]:
     return strong or items
 
 
+def _strong_identity_matches(evidence: list[Evidence], first: str, second: str) -> bool:
+    isbn_values = {_normalize_isbn(str(e.value)) for e in _values(evidence, "isbn") if _normalize_isbn(str(e.value))}
+    if len(isbn_values) != 1:
+        return False
+    author_items = _metadata_items(evidence, "author")
+    author_values = _unique([str(e.value) for e in author_items])
+    return len(author_values) == 1
+
+
+def _catalogue_structural_equivalent(first: str, second: str) -> bool:
+    first_indexed = _extract_explicit_book_index(first)
+    second_indexed = _extract_explicit_book_index(second)
+    if first_indexed and second_indexed and first_indexed[1] == second_indexed[1]:
+        return _title_punctuation_key(first_indexed[0]) == _title_punctuation_key(second_indexed[0])
+
+    normalized_first = _normalize_title(first)
+    normalized_second = _normalize_title(second)
+    shorter, longer = sorted((normalized_first, normalized_second), key=len)
+    stripped_longer = _strip_embedded_numeric_index(longer)
+    stripped_shorter = _strip_embedded_numeric_index(shorter)
+    if stripped_longer and stripped_shorter:
+        base_tokens = re.findall(r"[\wÆØÅæøå]+", stripped_shorter, flags=re.UNICODE)
+        if len(base_tokens) >= 2:
+            stripped_longer_key = _title_punctuation_key(stripped_longer)
+            stripped_shorter_key = _title_punctuation_key(stripped_shorter)
+            if stripped_longer_key.endswith(stripped_shorter_key) or stripped_shorter_key.endswith(stripped_longer_key):
+                return True
+
+    generic_descriptors = {"roman", "novel"}
+    for candidate, other in ((normalized_first, normalized_second), (normalized_second, normalized_first)):
+        for descriptor in generic_descriptors:
+            pattern = re.compile(rf"(?:^|[:|])\s*{re.escape(descriptor)}$")
+            if pattern.search(candidate):
+                base = re.sub(rf"(?:[:|])\s*{re.escape(descriptor)}$", "", candidate).strip()
+                if _title_punctuation_key(base) == _title_punctuation_key(other):
+                    return True
+    return False
+
+
 def _choose_title(evidence: list[Evidence]) -> tuple[str | None, list[str]]:
     items = _metadata_items(evidence, "title")
-    if not items: return None, []
+    if not items:
+        return None, []
     all_values = _unique([str(e.value) for e in items])
-    if len(all_values) <= 1: return all_values[0], []
+    if len(all_values) <= 1:
+        return all_values[0], []
 
     subtitles = _unique([str(e.value) for e in _values(evidence, "subtitle")])
     series_indices = _unique([str(e.value) for e in _values(evidence, "series_index")])
     title_items = {str(e.value): e for e in items}
     isbn_values = {_normalize_isbn(str(e.value)) for e in _values(evidence, "isbn") if _normalize_isbn(str(e.value))}
+    strong_identity = len(isbn_values) == 1 and len(_unique([str(e.value) for e in _metadata_items(evidence, "author")])) == 1
 
     def pair_equivalent(first: str, second: str) -> bool:
         if _title_equivalent(first, second, subtitles=subtitles, series_indices=series_indices):
@@ -211,65 +252,19 @@ def _choose_title(evidence: list[Evidence]) -> tuple[str | None, list[str]]:
         second_source = second_item.source.casefold()
         sources = {first_source, second_source}
 
-        if sources & {"folder", "filename"} and sources & {"epub", "nfo", "calibre"}:
+        if sources & {"folder", "filename"} and sources & STRONG_METADATA_SOURCES:
             if _title_comparison_key(first) == _title_comparison_key(second):
                 return True
 
-        # Same ISBN + same strong author identity is useful evidence, but never
-        # enough on its own. Folder/filename author guesses are deliberately
-        # ignored here because they are derived and can be wrong.
-        if len(isbn_values) == 1 and sources <= {"epub", "nfo", "calibre"}:
-            author_items = _metadata_items(evidence, "author")
-            author_values = _unique([str(e.value) for e in author_items])
-            same_author_evidence = len(author_values) == 1
-            if same_author_evidence:
-                normalized_first = _normalize_title(first)
-                normalized_second = _normalize_title(second)
-                shorter, longer = sorted((normalized_first, normalized_second), key=len)
-
-                if ((first_source in {"epub", "nfo"} and second_source == "calibre")
-                        or (second_source in {"epub", "nfo"} and first_source == "calibre")):
-                    # If both catalogue forms explicitly carry the same book
-                    # index, compare the retained base title. This handles e.g.
-                    # "... - bind 3: Moderne tider" vs "... 3" without treating
-                    # arbitrary numeric titles as series numbers.
-                    first_indexed = _extract_explicit_book_index(first)
-                    second_indexed = _extract_explicit_book_index(second)
-                    if first_indexed and second_indexed and first_indexed[1] == second_indexed[1]:
-                        if _title_punctuation_key(first_indexed[0]) == _title_punctuation_key(second_indexed[0]):
-                            return True
-
-                    # Catalogue title can omit an explicit series prefix/index.
-                    stripped_longer = _strip_embedded_numeric_index(longer)
-                    stripped_shorter = _strip_embedded_numeric_index(shorter)
-
-                    if stripped_longer and stripped_shorter:
-                        # Require at least two words in the retained base so
-                        # short titles such as "Bog 1" vs "Bog" remain REVIEW.
-                        base_tokens = re.findall(r"[\wÆØÅæøå]+", stripped_shorter, flags=re.UNICODE)
-                        if len(base_tokens) >= 2:
-                            if (
-                                _title_punctuation_key(stripped_longer) == _title_punctuation_key(stripped_shorter)
-                                or _title_punctuation_key(stripped_longer).endswith(_title_punctuation_key(stripped_shorter))
-                                or _title_punctuation_key(stripped_shorter).endswith(_title_punctuation_key(stripped_longer))
-                            ):
-                                return True
-
-                    # Calibre may add a generic catalogue descriptor.
-                    generic_descriptors = {"roman", "novel"}
-                    for candidate in (normalized_first, normalized_second):
-                        for descriptor in generic_descriptors:
-                            pattern = re.compile(rf"(?:^|[:|])\s*{re.escape(descriptor)}$")
-                            if pattern.search(candidate):
-                                base = re.sub(rf"(?:[:|])\s*{re.escape(descriptor)}$", "", candidate).strip()
-                                other = normalized_second if candidate == normalized_first else normalized_first
-                                if _title_punctuation_key(base) == _title_punctuation_key(other):
-                                    return True
+        if strong_identity and sources <= STRONG_METADATA_SOURCES:
+            # Same indexed book expressed by different catalogue conventions.
+            if _catalogue_structural_equivalent(first, second):
+                return True
 
         # Existing same-ISBN EPUB/Calibre folded-subtitle rule.
         if len(isbn_values) == 1 and sources == {"epub", "calibre"}:
-            epub_title = first if first_item.source.casefold() == "epub" else second
-            calibre_title = first if first_item.source.casefold() == "calibre" else second
+            epub_title = first if first_source == "epub" else second
+            calibre_title = first if first_source == "calibre" else second
             epub_norm, calibre_norm = _normalize_title(epub_title), _normalize_title(calibre_title)
             shorter, longer = sorted((epub_norm, calibre_norm), key=len)
             if longer.startswith(shorter):
@@ -280,39 +275,64 @@ def _choose_title(evidence: list[Evidence]) -> tuple[str | None, list[str]]:
                         return True
         return False
 
-    equivalent = all(pair_equivalent(first, second) for index, first in enumerate(all_values) for second in all_values[index + 1:])
-    if equivalent:
-        epub_titles = [v for v in all_values if title_items[v].source.casefold() == "epub"]
-        calibre_titles = [v for v in all_values if title_items[v].source.casefold() == "calibre"]
-        for epub_title in epub_titles:
-            for calibre_title in calibre_titles:
-                epub_norm, calibre_norm = _normalize_title(epub_title), _normalize_title(calibre_title)
-                shorter, longer = sorted((epub_norm, calibre_norm), key=len)
-                if longer.startswith(shorter):
-                    remainder = longer[len(shorter):]
-                    if remainder.startswith((" - ", ": ", " | ")):
-                        suffix = remainder[3:].strip()
-                        if suffix and re.search(r"[A-Za-zÆØÅæøåÀ-ÖØ-öø-ÿ]", suffix): return epub_title, []
-        for value in all_values:
-            if title_items[value].source.casefold() in STRONG_METADATA_SOURCES:
-                weak_match = any(other != value and title_items[other].source.casefold() in WEAK_DERIVED_SOURCES and _title_comparison_key(other) == _title_comparison_key(value) for other in all_values)
-                if weak_match: return value, []
-        return min(all_values, key=lambda value: (len(_normalize_title(value)), _normalize_title(value))), []
+    equivalent = all(
+        pair_equivalent(first, second)
+        for index, first in enumerate(all_values)
+        for second in all_values[index + 1:]
+    )
+    if not equivalent:
+        max_conf = max((e.confidence or 0.0) for e in items)
+        top_values = _unique([str(e.value) for e in items if (e.confidence or 0.0) == max_conf])
+        chosen = top_values[0] if top_values else all_values[0]
+        return chosen, [f"conflicting title evidence: {all_values}"]
 
-    max_conf = max((e.confidence or 0.0) for e in items)
-    top_values = _unique([str(e.value) for e in items if (e.confidence or 0.0) == max_conf])
-    chosen = top_values[0] if top_values else all_values[0]
-    return chosen, [f"conflicting title evidence: {all_values}"]
+    epub_titles = [v for v in all_values if title_items[v].source.casefold() == "epub"]
+    calibre_titles = [v for v in all_values if title_items[v].source.casefold() == "calibre"]
+
+    # Preserve the established folded-subtitle behaviour: when Calibre merely
+    # folds a subtitle into the title, the EPUB title remains canonical.
+    for epub_title in epub_titles:
+        for calibre_title in calibre_titles:
+            epub_norm, calibre_norm = _normalize_title(epub_title), _normalize_title(calibre_title)
+            shorter, longer = sorted((epub_norm, calibre_norm), key=len)
+            if longer.startswith(shorter):
+                remainder = longer[len(shorter):]
+                if remainder.startswith((" - ", ": ", " | ")):
+                    suffix = remainder[3:].strip()
+                    if suffix and re.search(r"[A-Za-zÆØÅæøåÀ-ÖØ-öø-ÿ]", suffix):
+                        return epub_title, []
+
+    # For catalogue forms where Calibre drops the series prefix, keep the
+    # richer EPUB/NFO title. This is distinct from the Vølvens vej rule above,
+    # where the only difference is the embedded numeric index.
+    for epub_title in epub_titles:
+        for calibre_title in calibre_titles:
+            if _catalogue_structural_equivalent(epub_title, calibre_title):
+                stripped_epub = _strip_embedded_numeric_index(epub_title)
+                stripped_calibre = _strip_embedded_numeric_index(calibre_title)
+                if _title_punctuation_key(stripped_epub) != _title_punctuation_key(stripped_calibre):
+                    return epub_title, []
+                if re.search(r"(?:^|[:|])\s*(roman|novel)$", _normalize_title(calibre_title)):
+                    return epub_title, []
+
+    # Prefer EPUB over NFO/Calibre when equivalent and no more specific rule
+    # applies. Otherwise preserve the previous shortest-title fallback.
+    if epub_titles:
+        return epub_titles[0], []
+    return min(all_values, key=lambda value: (len(_normalize_title(value)), _normalize_title(value))), []
+
 
 SOURCE_PRIORITY = {"epub": 40, "nfo": 35, "folder": 30, "filename": 25, "calibre": 20}
 
 
 def _preferred_value(evidence: list[Evidence], field: str, *, longest: bool = False) -> str | None:
     items = _values(evidence, field)
-    if not items: return None
+    if not items:
+        return None
     max_source = max(SOURCE_PRIORITY.get(e.source.casefold(), 10) for e in items)
     source_items = [e for e in items if SOURCE_PRIORITY.get(e.source.casefold(), 10) == max_source]
-    if longest: return max((str(e.value).strip() for e in items), key=len, default=None)
+    if longest:
+        return max((str(e.value).strip() for e in items), key=len, default=None)
     max_conf = max((e.confidence or 0.0) for e in source_items)
     values = _unique([str(e.value) for e in source_items if (e.confidence or 0.0) == max_conf])
     return values[0] if values else None
@@ -323,19 +343,24 @@ def _enriched_field(evidence: list[Evidence], field: str, *, longest: bool = Fal
 
 
 def reconcile(evidence: list[Evidence], errors: list[str] | None = None) -> ResolvedMetadata:
-    result = ResolvedMetadata(); reasons: list[str] = []
-    result.title, title_reasons = _choose_title(evidence); reasons.extend(title_reasons)
+    result = ResolvedMetadata()
+    reasons: list[str] = []
+    result.title, title_reasons = _choose_title(evidence)
+    reasons.extend(title_reasons)
     if result.title is None:
         result.title, _ = _choose(evidence, "title_candidate")
-        if result.title is None: reasons.append("no reliable title evidence")
+        if result.title is None:
+            reasons.append("no reliable title evidence")
 
     author_items = _metadata_items(evidence, "author")
     result.authors = _unique([str(e.value) for e in author_items])
-    if not result.authors: reasons.append("no reliable author evidence")
+    if not result.authors:
+        reasons.append("no reliable author evidence")
 
     isbn_items = _values(evidence, "isbn")
     isbns = _unique([x for x in (_normalize_isbn(str(e.value)) for e in isbn_items) if x])
-    if len(isbns) == 1: result.isbn = isbns[0]
+    if len(isbns) == 1:
+        result.isbn = isbns[0]
     elif len(isbns) > 1:
         candidates = [item for item in isbn_items if _normalize_isbn(str(item.value)) in isbns]
         if candidates:
@@ -343,12 +368,17 @@ def reconcile(evidence: list[Evidence], errors: list[str] | None = None) -> Reso
             result.isbn = _normalize_isbn(str(strongest.value))
         reasons.append(f"conflicting ISBN evidence: {isbns}")
 
-    result.series, series_reasons = _choose(evidence, "series"); reasons.extend(series_reasons)
-    result.subtitle, subtitle_reasons = _choose(evidence, "subtitle"); reasons.extend(subtitle_reasons)
-    series_index, series_index_reasons = _choose(evidence, "series_index"); reasons.extend(series_index_reasons)
+    result.series, series_reasons = _choose(evidence, "series")
+    reasons.extend(series_reasons)
+    result.subtitle, subtitle_reasons = _choose(evidence, "subtitle")
+    reasons.extend(subtitle_reasons)
+    series_index, series_index_reasons = _choose(evidence, "series_index")
+    reasons.extend(series_index_reasons)
     if series_index is not None:
-        try: result.series_index = float(series_index)
-        except ValueError: reasons.append(f"invalid series index: {series_index!r}")
+        try:
+            result.series_index = float(series_index)
+        except ValueError:
+            reasons.append(f"invalid series index: {series_index!r}")
 
     result.publisher = _enriched_field(evidence, "publisher")
     result.published = _enriched_field(evidence, "published")
@@ -357,11 +387,15 @@ def reconcile(evidence: list[Evidence], errors: list[str] | None = None) -> Reso
     for item in _values(evidence, "identifier"):
         raw = str(item.value)
         if ":" in raw:
-            key, value = raw.split(":", 1); result.identifiers.setdefault(key.casefold(), value)
-        else: result.identifiers.setdefault("unknown", raw)
+            key, value = raw.split(":", 1)
+            result.identifiers.setdefault(key.casefold(), value)
+        else:
+            result.identifiers.setdefault("unknown", raw)
     result.languages = _unique([lang for lang in (_normalize_language(str(e.value)) for e in _values(evidence, "language")) if lang])
-    if not result.languages: reasons.append("no normalized language evidence")
-    if errors: reasons.extend(errors)
+    if not result.languages:
+        reasons.append("no normalized language evidence")
+    if errors:
+        reasons.extend(errors)
     result.reasons = _unique(reasons)
     result.status = "AUTO" if not result.reasons and result.title and result.authors else "REVIEW"
     return result

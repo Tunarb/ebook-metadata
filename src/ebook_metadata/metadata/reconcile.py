@@ -116,6 +116,31 @@ def _strip_embedded_numeric_index(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip(" .,:;-|")
 
 
+def _extract_explicit_book_index(value: str) -> tuple[str, str] | None:
+    """Return (base_title, index) for an explicit book/volume index.
+
+    Handles release/catalogue forms such as ``Title #4: Subtitle``,
+    ``Title - bind 3: Subtitle`` and ``Title 3``. Four-digit title numbers
+    are intentionally excluded from the trailing-number form.
+    """
+    normalized = _normalize_title(value)
+    if not normalized:
+        return None
+
+    marker = re.search(r"#\s*(\d{1,3}(?:\.\d+)?)", normalized)
+    if not marker:
+        marker = re.search(r"\b(?:bog|book|bind|volume|vol\.?)\s*(\d{1,3}(?:\.\d+)?)\b", normalized, re.IGNORECASE)
+    if marker:
+        base = normalized[:marker.start()].strip(" .,:;-|")
+        return (base, marker.group(1)) if base else None
+
+    trailing = re.search(r"(?:^|\s)(\d{1,3}(?:\.\d+)?)$", normalized)
+    if trailing:
+        base = normalized[:trailing.start()].strip(" .,:;-|")
+        return (base, trailing.group(1)) if base else None
+    return None
+
+
 def _title_equivalent(first: str, second: str, *, subtitles: list[str] | None = None, series_indices: list[str] | None = None) -> bool:
     left, right = _normalize_title(first), _normalize_title(second)
     if not left or not right: return False
@@ -190,19 +215,30 @@ def _choose_title(evidence: list[Evidence]) -> tuple[str | None, list[str]]:
             if _title_comparison_key(first) == _title_comparison_key(second):
                 return True
 
-        # Same ISBN + same author is useful identity evidence, but never enough
-        # on its own. Use it only for narrow catalogue-title transformations:
-        #   - an explicit series/book prefix followed by the catalogue subtitle;
-        #   - a harmless generic descriptor such as ": roman".
+        # Same ISBN + same strong author identity is useful evidence, but never
+        # enough on its own. Folder/filename author guesses are deliberately
+        # ignored here because they are derived and can be wrong.
         if len(isbn_values) == 1 and sources <= {"epub", "nfo", "calibre"}:
-            author_values = _unique([str(e.value) for e in _values(evidence, "author")])
+            author_items = _metadata_items(evidence, "author")
+            author_values = _unique([str(e.value) for e in author_items])
             same_author_evidence = len(author_values) == 1
             if same_author_evidence:
                 normalized_first = _normalize_title(first)
                 normalized_second = _normalize_title(second)
                 shorter, longer = sorted((normalized_first, normalized_second), key=len)
 
-                if first_source in {"epub", "nfo"} and second_source == "calibre" or second_source in {"epub", "nfo"} and first_source == "calibre":
+                if ((first_source in {"epub", "nfo"} and second_source == "calibre")
+                        or (second_source in {"epub", "nfo"} and first_source == "calibre")):
+                    # If both catalogue forms explicitly carry the same book
+                    # index, compare the retained base title. This handles e.g.
+                    # "... - bind 3: Moderne tider" vs "... 3" without treating
+                    # arbitrary numeric titles as series numbers.
+                    first_indexed = _extract_explicit_book_index(first)
+                    second_indexed = _extract_explicit_book_index(second)
+                    if first_indexed and second_indexed and first_indexed[1] == second_indexed[1]:
+                        if _title_punctuation_key(first_indexed[0]) == _title_punctuation_key(second_indexed[0]):
+                            return True
+
                     # Catalogue title can omit an explicit series prefix/index.
                     stripped_longer = _strip_embedded_numeric_index(longer)
                     stripped_shorter = _strip_embedded_numeric_index(shorter)
@@ -261,12 +297,6 @@ def _choose_title(evidence: list[Evidence]) -> tuple[str | None, list[str]]:
             if title_items[value].source.casefold() in STRONG_METADATA_SOURCES:
                 weak_match = any(other != value and title_items[other].source.casefold() in WEAK_DERIVED_SOURCES and _title_comparison_key(other) == _title_comparison_key(value) for other in all_values)
                 if weak_match: return value, []
-        # Prefer release-local metadata spelling when titles are equivalent.
-        # Calibre can legitimately normalize punctuation/spacing, but EPUB/NFO
-        # should remain the canonical title when available.
-        for value in all_values:
-            if title_items[value].source.casefold() in {"epub", "nfo"}:
-                return value, []
         return min(all_values, key=lambda value: (len(_normalize_title(value)), _normalize_title(value))), []
 
     max_conf = max((e.confidence or 0.0) for e in items)

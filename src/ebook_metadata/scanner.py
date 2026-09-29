@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,6 +22,7 @@ def scan(
     calibre_enabled: bool = False,
     calibre_container: str | None = None,
     history_path: Path | None = None,
+    calibre_workers: int | None = None,
 ) -> dict:
     candidates = discover(source)
     run_id = scan_id()
@@ -40,23 +42,28 @@ def scan(
         candidate.embedded_cover = embedded_cover
         candidate.external_images = images.collect(candidate)
 
-    data = []
-    for candidate in candidates:
-        item = candidate.to_dict()
-        evidence = [Evidence(**entry) for entry in item["evidence"]]
-
-        # First resolve only local evidence. This result determines the safest
-        # Calibre query (ISBN first, then title+author, then title).
-        preliminary = reconcile(evidence, item.get("errors"))
-
-        if calibre_client is not None:
+    if calibre_client is not None:
+        workers = calibre_workers or _env_int("CALIBRE_WORKERS", 4, minimum=1)
+        # Each candidate is independent during enrichment. A small thread pool
+        # prevents one slow remote metadata provider from serialising the whole
+        # scan while avoiding an uncontrolled burst of requests.
+        def enrich(candidate):
+            item = candidate.to_dict()
+            evidence = [Evidence(**entry) for entry in item["evidence"]]
+            preliminary = reconcile(evidence, item.get("errors"))
             enrich_with_calibre(
                 candidate,
                 client=calibre_client,
                 preliminary=preliminary,
             )
-            item = candidate.to_dict()
+            return candidate
 
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            candidates = list(executor.map(enrich, candidates))
+
+    data = []
+    for candidate in candidates:
+        item = candidate.to_dict()
         evidence = [Evidence(**entry) for entry in item["evidence"]]
         resolved = reconcile(evidence, item.get("errors")).to_dict()
         item["resolved"] = resolved
@@ -81,9 +88,20 @@ def scan(
         "candidate_count": len(candidates),
         "calibre_enabled": calibre_enabled,
         "calibre_container": calibre_container if calibre_enabled else None,
+        "calibre_workers": calibre_workers if calibre_enabled else None,
         "history_path": str(history_path) if history_path else None,
         "candidates": data,
     }
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
 
 
 def main() -> None:
@@ -104,6 +122,12 @@ def main() -> None:
         "--calibre-container",
         default=os.environ.get("CALIBRE_CONTAINER", "calibre"),
     )
+    parser.add_argument(
+        "--calibre-workers",
+        type=int,
+        default=None,
+        help="Maximum concurrent Calibre metadata lookups (default: CALIBRE_WORKERS or 4).",
+    )
     args = parser.parse_args()
 
     source = Path(args.source).resolve()
@@ -117,6 +141,7 @@ def main() -> None:
         calibre_enabled=args.calibre,
         calibre_container=args.calibre_container if args.calibre else None,
         history_path=history_path,
+        calibre_workers=args.calibre_workers,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import copy
 import os
 import re
 import subprocess
+import threading
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -37,19 +39,38 @@ class CalibreClient:
     The client is deliberately read-only with respect to the Calibre library.
     It only invokes ``fetch-ebook-metadata`` and optionally asks that command
     to download a cover to a temporary location inside the Calibre container.
+
+    Network metadata lookup is the expensive part of the pipeline.  By
+    default we restrict Calibre to the two useful built-in metadata sources
+    used by this project and use a shorter timeout than Calibre's default.
+    Both settings remain configurable through constructor arguments or
+    environment variables.
     """
+
+    DEFAULT_PLUGINS = ("Google", "Open Library")
+    DEFAULT_TIMEOUT = 15
 
     def __init__(
         self,
         container: str | None = None,
         docker_binary: str | None = None,
-        timeout: int = 60,
+        timeout: int | None = None,
         allowed_plugins: Sequence[str] | None = None,
     ) -> None:
         self.container = container or os.getenv("CALIBRE_CONTAINER", "calibre")
         self.docker_binary = docker_binary or os.getenv("DOCKER_BINARY", "docker")
-        self.timeout = timeout
-        self.allowed_plugins = tuple(allowed_plugins or ())
+        self.timeout = (
+            timeout
+            if timeout is not None
+            else _env_int("CALIBRE_TIMEOUT", self.DEFAULT_TIMEOUT, minimum=1)
+        )
+        self.allowed_plugins = tuple(
+            allowed_plugins
+            if allowed_plugins is not None
+            else _env_list("CALIBRE_ALLOWED_PLUGINS", self.DEFAULT_PLUGINS)
+        )
+        self._cache: dict[tuple[object, ...], CalibreMetadata | CalibreLookupError] = {}
+        self._cache_lock = threading.Lock()
 
     def lookup(
         self,
@@ -64,9 +85,19 @@ class CalibreClient:
         At least one of title, authors, ISBN or identifier is required.
         ISBNs are passed through as supplied; Calibre performs its own
         identifier lookup. Identifiers use Calibre's ``--identifier`` syntax.
+        Results and failures are cached for the lifetime of this scanner run,
+        which prevents duplicate network lookups.
         """
         if not any((title, authors, isbn, identifiers)):
             raise ValueError("At least one metadata lookup value is required")
+
+        cache_key = _lookup_key(title, authors, isbn, identifiers)
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
+        if cached is not None:
+            if isinstance(cached, CalibreLookupError):
+                raise CalibreLookupError(str(cached))
+            return copy.deepcopy(cached)
 
         args: list[str] = [
             self.docker_binary,
@@ -89,15 +120,25 @@ class CalibreClient:
         for plugin in self.allowed_plugins:
             args.extend(["--allowed-plugin", plugin])
         args.extend(["--timeout", str(self.timeout), "--opf"])
-        completed = self._run(args)
-        if not completed.stdout.strip():
-            detail = completed.stderr.strip() or "Calibre returned no OPF metadata"
-            raise CalibreLookupError(detail)
 
         try:
-            return parse_opf(completed.stdout)
-        except (ET.ParseError, ValueError) as exc:
-            raise CalibreLookupError(f"Could not parse Calibre OPF: {exc}") from exc
+            completed = self._run(args)
+            if not completed.stdout.strip():
+                detail = completed.stderr.strip() or "Calibre returned no OPF metadata"
+                raise CalibreLookupError(detail)
+
+            try:
+                result = parse_opf(completed.stdout)
+            except (ET.ParseError, ValueError) as exc:
+                raise CalibreLookupError(f"Could not parse Calibre OPF: {exc}") from exc
+        except CalibreLookupError as exc:
+            with self._cache_lock:
+                self._cache[cache_key] = exc
+            raise
+
+        with self._cache_lock:
+            self._cache[cache_key] = copy.deepcopy(result)
+        return result
 
     def download_cover(
         self,
@@ -156,8 +197,6 @@ class CalibreClient:
                 ]
             )
         finally:
-            # Best effort cleanup inside the Calibre container. A failed
-            # cleanup must not hide the actual lookup/copy result.
             try:
                 self._run(
                     [self.docker_binary, "exec", self.container, "rm", "-f", remote]
@@ -191,6 +230,39 @@ class CalibreClient:
             raise CalibreLookupError(
                 f"Calibre command failed with exit code {exc.returncode}: {detail}"
             ) from exc
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def _env_list(name: str, default: Sequence[str]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None:
+        return tuple(default)
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    return values
+
+
+def _lookup_key(
+    title: str | None,
+    authors: Sequence[str] | None,
+    isbn: str | None,
+    identifiers: dict[str, str] | None,
+) -> tuple[object, ...]:
+    return (
+        (title or "").strip().casefold(),
+        tuple(a.strip().casefold() for a in (authors or ()) if a.strip()),
+        (isbn or "").strip().casefold(),
+        tuple(sorted((k.strip().casefold(), v.strip().casefold()) for k, v in (identifiers or {}).items())),
+    )
 
 
 def parse_opf(opf: str) -> CalibreMetadata:
